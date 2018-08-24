@@ -382,14 +382,10 @@ public class RenderingSystem : MonoBehaviour
 	public void Draw()
 	{
 		colorBuffer = rt1.GetRawTextureData<Color32>();
-	
-		Profiler.BeginSample("Clearing Buffer");
 
 		colorBuffer.CopyFrom(clearColor);
 		depthBuffer.CopyFrom(clearDepthBuffer);
-		
-		Profiler.EndSample();
-		
+				
 		var vertexJob = new VertexProcessingJob();
 		vertexJob.model = model;
 		vertexJob.proj = proj;
@@ -407,10 +403,8 @@ public class RenderingSystem : MonoBehaviour
 		}
 		else
 		{
-			Profiler.BeginSample("Vertex Trasnform");
 			for(int i = 0 ; i < vertexJob.output.Length; ++i)
 				vertexJob.Execute(i);
-			Profiler.EndSample();
 		}
 
 		RasterizePixelJob rasterizePixelJob = new RasterizePixelJob();
@@ -427,10 +421,8 @@ public class RenderingSystem : MonoBehaviour
 		}
 		else
 		{
-			Profiler.BeginSample("Pixel Op");
 			for(int i = 0; i < vertexOutput.Length; ++i)
 				rasterizePixelJob.Execute(i);
-			Profiler.EndSample();
 		}
 
 		rt1.Apply();
