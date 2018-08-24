@@ -2,10 +2,12 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
+using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
 using UnityEngine;
 using Unity.Mathematics;
+using UnityEngine.Profiling;
 
 public class RenderingSystem : MonoBehaviour
 {
@@ -14,7 +16,7 @@ public class RenderingSystem : MonoBehaviour
 	public Texture2D rt1;
 	
 	public bool jobifyVertex = true;
-	public bool jobifyPixels = false;
+	public bool jobifyPixels = true;
 
 	protected int _width, _height;
 
@@ -28,9 +30,10 @@ public class RenderingSystem : MonoBehaviour
 	NativeArray<float> depthBuffer;
 	NativeArray<Color32> colorBuffer;
 
-	BufferClearJob clearJob;
-
 	NativeArray<VertexOut> vertexOutput;
+
+	NativeArray<float> clearDepthBuffer;
+	NativeArray<Color32> clearColor;
 
 	public struct VertexIn
 	{
@@ -71,26 +74,36 @@ public class RenderingSystem : MonoBehaviour
 			mesh[i] = value;
 		}
 
+		
 		triangles = new NativeArray<int>(testMesh.triangles, Allocator.Persistent);
 		vertexOutput = new NativeArray<VertexOut>(triangles.Length, Allocator.Persistent);
-
 	}
 	
 	void UpdateTexture()
 	{
-		_width = Screen.width / 2;
-		_height = Screen.height / 2;
+		_width = Screen.width;
+		_height = Screen.height;
 
 		if(depthBuffer.IsCreated)
 			depthBuffer.Dispose();
 		
 		depthBuffer = new NativeArray<float>(_width * _height, Allocator.Persistent);
-				
-		clearJob = new BufferClearJob();
-		clearJob.depth = depthBuffer;
 		
 		rt1 = new Texture2D(_width, _height, TextureFormat.RGBA32, false);
 		
+		if(clearDepthBuffer.IsCreated)
+			clearDepthBuffer.Dispose();
+		
+		if(clearColor.IsCreated)
+			clearColor.Dispose();
+		
+		clearDepthBuffer = new NativeArray<float>(_width * _height, Allocator.Persistent);
+		clearColor = new NativeArray<Color32>(_width * _height, Allocator.Persistent);
+		for (int i = 0; i < _width * _height; ++i)
+		{
+			clearDepthBuffer[i] = 1.0f;
+			clearColor[i] = new Color32(0,0,0,255);
+		}
 		
 		DisplayResult.Instance.rt = rt1;
 	}
@@ -102,6 +115,9 @@ public class RenderingSystem : MonoBehaviour
 		vertexOutput.Dispose();
 		
 		depthBuffer.Dispose();
+		
+		clearDepthBuffer.Dispose();
+		clearColor.Dispose();
 	}
 
 	float angle = 0;
@@ -121,20 +137,8 @@ public class RenderingSystem : MonoBehaviour
 		model = float4x4.eulerXYZ(0, angle, 0);
 		Draw();
 	}
-
-	public struct BufferClearJob : IJobParallelFor
-	{
-		public NativeArray<float> depth;
-		public NativeArray<Color32> color;
-
-		public void Execute(int i)
-		{
-			depth[i] = 1.0f;
-			color[i] = new Color32(0,0,0,255);
-		}
-	}
 	
-	
+	[BurstCompile(CompileSynchronously = true)]
 	public struct VertexProcessingJob : IJobParallelFor
 	{
 		[ReadOnly]
@@ -144,6 +148,7 @@ public class RenderingSystem : MonoBehaviour
 		[ReadOnly]
 		public NativeArray<VertexIn> input;
 		
+		[WriteOnly]
 		public NativeArray<VertexOut> output;
     
 		public void Execute(int i)
@@ -163,11 +168,12 @@ public class RenderingSystem : MonoBehaviour
 		}
 	}
 
+	[BurstCompile(CompileSynchronously = true)]
 	public struct RasterizePixelJob : IJobParallelFor
 	{
 		[ReadOnly]
 		public int width, height;
-		
+		[ReadOnly]
 		public NativeArray<VertexOut> input;
 
 		[NativeDisableParallelForRestriction] public NativeArray<float> depthbuffer;
@@ -180,7 +186,7 @@ public class RenderingSystem : MonoBehaviour
 			{
 				return;
 			}
-			
+						
 			VertexOut v1 = input[i + 0];
 			VertexOut v2 = input[i + 1];
 			VertexOut v3 = input[i + 2];
@@ -233,7 +239,9 @@ public class RenderingSystem : MonoBehaviour
 			int maxy = (Max3(Y1, Y2, Y3) + 0xF) >> 4;
 
 			if (minx >= width || miny >= height || maxx < 0 || maxy < 0)
+			{
 				return; //rect outside of screen
+			}
 
 			minx = (minx < 0 ? 0 : minx);
 			miny = (miny < 0 ? 0 : miny);
@@ -257,6 +265,7 @@ public class RenderingSystem : MonoBehaviour
 			if (DY23 < 0 || (DY23 == 0 && DX23 > 0)) C2++;
 			if (DY31 < 0 || (DY31 == 0 && DX31 > 0)) C3++;
 
+			
 			// Loop through blocks
 			for (int y = miny; y < maxy; y += q)
 			{
@@ -330,7 +339,7 @@ public class RenderingSystem : MonoBehaviour
 							CY3 += FDX31;
 						}
 					}
-				}
+				}	
 			}
 		}
 		
@@ -343,8 +352,13 @@ public class RenderingSystem : MonoBehaviour
 
 			v = Interpolate(v1, v2, v3, bar);
 
-			if(v.position.z < 0.0f || v.position.z > 1.0f || v.position.z > depthbuffer[y*width + x])
+			if (v.position.z < 0.0f || v.position.z > 1.0f || v.position.z > depthbuffer[y * width + x])
+			{
 				return;
+			}
+			
+
+			Color32 outputColor = output[y * width + x];
 
 			float lum = math.max(0.0f, math.dot(v.normal.xyz, new float3(-0.71f, -0.71f, 0)));
 
@@ -355,12 +369,12 @@ public class RenderingSystem : MonoBehaviour
 
 			resultColor = math.saturate(resultColor);
 
-			output[y * width + x] = new Color32(
-				(byte)Mathf.FloorToInt(resultColor.x * 255), 
-				(byte)Mathf.FloorToInt(resultColor.y * 255),
-				(byte)Mathf.FloorToInt(resultColor.z * 255),
-				(byte)Mathf.FloorToInt(resultColor.w * 255));
-			
+			outputColor.r = (byte)Mathf.FloorToInt(resultColor.x * 255);
+			outputColor.g = (byte)Mathf.FloorToInt(resultColor.y * 255);
+			outputColor.b = (byte)Mathf.FloorToInt(resultColor.z * 255);
+			outputColor.a = (byte)Mathf.FloorToInt(resultColor.w * 255);
+
+			output[y * width + x] = outputColor;
 			depthbuffer[y * width + x] = v.position.z;
 		}
 	}
@@ -368,10 +382,13 @@ public class RenderingSystem : MonoBehaviour
 	public void Draw()
 	{
 		colorBuffer = rt1.GetRawTextureData<Color32>();
-		clearJob.color = colorBuffer;
+	
+		Profiler.BeginSample("Clearing Buffer");
 
-		//we can wait for after the vertex processing to ensure it was finished, as we won't touch the buffer until then
-		var clearHandle = clearJob.Schedule(depthBuffer.Length, _width*_height / 8);
+		colorBuffer.CopyFrom(clearColor);
+		depthBuffer.CopyFrom(clearDepthBuffer);
+		
+		Profiler.EndSample();
 		
 		var vertexJob = new VertexProcessingJob();
 		vertexJob.model = model;
@@ -390,10 +407,11 @@ public class RenderingSystem : MonoBehaviour
 		}
 		else
 		{
-			vertexJob.Run(vertexJob.output.Length);
+			Profiler.BeginSample("Vertex Trasnform");
+			for(int i = 0 ; i < vertexJob.output.Length; ++i)
+				vertexJob.Execute(i);
+			Profiler.EndSample();
 		}
-		
-		clearHandle.Complete();
 
 		RasterizePixelJob rasterizePixelJob = new RasterizePixelJob();
 		rasterizePixelJob.depthbuffer = depthBuffer;
@@ -409,7 +427,10 @@ public class RenderingSystem : MonoBehaviour
 		}
 		else
 		{
-			rasterizePixelJob.Run(vertexOutput.Length);
+			Profiler.BeginSample("Pixel Op");
+			for(int i = 0; i < vertexOutput.Length; ++i)
+				rasterizePixelJob.Execute(i);
+			Profiler.EndSample();
 		}
 
 		rt1.Apply();

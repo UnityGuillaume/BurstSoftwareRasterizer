@@ -311,5 +311,5 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   testMesh: {fileID: 4300000, guid: 01e679f35199d9c4dbd06bd97807daff, type: 3}
   rt1: {fileID: 0}
-  jobifyVertex: 1
-  jobifyPixels: 1
+  jobifyVertex: 0
+  jobifyPixels: 0
